@@ -41,19 +41,32 @@ type LinstorConfig struct {
 }
 
 type LinstorParams struct {
-	Nodes               []string
-	ReplicasOnDifferent []string
-	ReplicasOnSame      []string
-	DisklessStoragePool string
-	DoNotPlaceWithRegex string
-	FS                  string
-	FSOpts              string
-	MountOpts           []string
-	StoragePool         string
-	Size                string
+	Nodes               []string `mapstructure:"nodes"`
+	ReplicasOnDifferent []string `mapstructure:"replicas-on-different"`
+	ReplicasOnSame      []string `mapstructure:"replicas-on-same"`
+	DisklessStoragePool string   `mapstructure:"diskless-storage-pool"`
+	DoNotPlaceWithRegex string   `mapstructure:"do-not-place-with-regex"`
+	FS                  string   `mapstructure:"fs"`
+	FSOpts              string   `mapstructure:"fsopts"`
+	MountOpts           []string `mapstructure:"mount-opts"`
+	StoragePool         string   `mapstructure:"storage-pool"`
+	Size                string   `mapstructure:"size"`
 	SizeKiB             uint64
-	Replicas            int32
-	DisklessOnRemaining bool
+	Replicas            int32    `mapstructure:"replicas"`
+	DisklessOnRemaining bool     `mapstructure:"diskless-on-remaining"`
+
+	// DRBD options from docker-volume.conf [global]
+	Protocol              string `mapstructure:"protocol"`
+	ConnectInterval       string `mapstructure:"connect-int"`
+	PingInterval          string `mapstructure:"ping-int"`
+	PingTimeout           string `mapstructure:"ping-timeout"`
+	ResyncRate            string `mapstructure:"resync-rate"`
+	ALExtents             string `mapstructure:"al-extents"`
+	MaxBuffers            string `mapstructure:"max-buffers"`
+	MaxEpochSize          string `mapstructure:"max-epoch-size"`
+	HandlerSplitBrain     string `mapstructure:"handler-split-brain"`
+	HandlerPriOnInconDegr string `mapstructure:"handler-pri-on-incon-degr"`
+	PrimarySetOn          string `mapstructure:"primary-set-on"`
 }
 
 type LinstorDriver struct {
@@ -81,12 +94,13 @@ func (l *LinstorDriver) newBaseURL(hosts string) (*url.URL, error) {
 	scheme := "http"
 	host := "localhost:3370"
 	if hosts != "" {
-		host = strings.Split(hosts, ",")[0]
-		if s := strings.Split(host, "://"); len(s) == 2 {
-			if s[0] == "linstor+ssl" || s[0] == "https" {
+		parts := strings.SplitN(hosts, ",", 2)
+		h := parts[0]
+		if p := strings.SplitN(h, "://", 2); len(p) == 2 {
+			if p[0] == "linstor+ssl" || p[0] == "https" {
 				scheme = "https"
 			}
-			host = s[1]
+			host = p[1]
 		}
 	}
 
@@ -151,21 +165,18 @@ func (l *LinstorDriver) newParams(name string, options map[string]string) (*Lins
 		return nil, err
 	}
 
-	if options == nil {
-		return params, nil
-	}
-
-	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-		Result:           params,
-		WeaklyTypedInput: true,
-		DecodeHook:       mapstructure.StringToSliceHookFunc(" "),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	if err = decoder.Decode(options); err != nil {
-		return nil, err
+	if options != nil {
+		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+			Result:           params,
+			WeaklyTypedInput: true,
+			DecodeHook:       mapstructure.StringToSliceHookFunc(" "),
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err = decoder.Decode(options); err != nil {
+			return nil, err
+		}
 	}
 
 	// convert string Size to SizeKiB
@@ -173,10 +184,9 @@ func (l *LinstorDriver) newParams(name string, options map[string]string) (*Lins
 		params.Size = "100MB"
 	}
 	u := unit.MustNewUnit(unit.DefaultUnits)
-	strSize := params.Size
-	v, err := u.ValueFromString(strSize)
+	v, err := u.ValueFromString(params.Size)
 	if err != nil {
-		return nil, fmt.Errorf("Could not convert '%s' to bytes: %v", strSize, err)
+		return nil, fmt.Errorf("Could not convert '%s' to bytes: %v", params.Size, err)
 	}
 	bytes := v.Value
 	lower := 4 * unit.M
@@ -196,36 +206,6 @@ func (l *LinstorDriver) newParams(name string, options map[string]string) (*Lins
 	return params, nil
 }
 
-func (l *LinstorDriver) resourcesCreate(ctx context.Context, c *client.Client, req *volume.CreateRequest, params *LinstorParams) error {
-	err := c.ResourceDefinitions.CreateVolumeDefinition(ctx, req.Name, client.VolumeDefinitionCreate{
-		VolumeDefinition: client.VolumeDefinition{
-			SizeKib: params.SizeKiB,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if len(params.Nodes) == 0 {
-		return c.Resources.Autoplace(ctx, req.Name, client.AutoPlaceRequest{
-			DisklessOnRemaining: params.DisklessOnRemaining,
-			SelectFilter: client.AutoSelectFilter{
-				PlaceCount:           params.Replicas,
-				StoragePool:          params.StoragePool,
-				NotPlaceWithRscRegex: params.DoNotPlaceWithRegex,
-				ReplicasOnSame:       params.ReplicasOnSame,
-				ReplicasOnDifferent:  params.ReplicasOnDifferent,
-			},
-		})
-	}
-	for _, node := range params.Nodes {
-		err = c.Resources.Create(ctx, l.toDiskfullCreate(req.Name, node, params))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
 	params, err := l.newParams(req.Name, req.Options)
 	if err != nil {
@@ -236,6 +216,26 @@ func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
 		return err
 	}
 	ctx := context.Background()
+
+	// build DRBD options
+	drbdOpts := []client.DRBDOption{}
+	addOpt := func(name, val string) {
+		if val != "" {
+			drbdOpts = append(drbdOpts, client.DRBDOption{Name: name, Value: val})
+		}
+	}
+	addOpt("protocol", params.Protocol)
+	addOpt("connect-int", params.ConnectInterval)
+	addOpt("ping-int", params.PingInterval)
+	addOpt("ping-timeout", params.PingTimeout)
+	addOpt("resync-rate", params.ResyncRate)
+	addOpt("al-extents", params.ALExtents)
+	addOpt("max-buffers", params.MaxBuffers)
+	addOpt("max-epoch-size", params.MaxEpochSize)
+	addOpt("handler-split-brain", params.HandlerSplitBrain)
+	addOpt("handler-pri-on-incon-degr", params.HandlerPriOnInconDegr)
+	addOpt("primary-set-on", params.PrimarySetOn)
+
 	err = c.ResourceDefinitions.Create(ctx, client.ResourceDefinitionCreate{
 		ResourceDefinition: client.ResourceDefinition{
 			Name: req.Name,
@@ -243,31 +243,18 @@ func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
 				pluginFlagKey:           pluginFlagValue,
 				pluginFSTypeKey:         params.FS,
 				"FileSystem/MkfsParams": params.FSOpts,
-
-			    "DrbdOptions/Resource/protocol":             "C",
-   			 	"DrbdOptions/Net/connect-int":               "60",
-   			 	"DrbdOptions/Net/ping-int":                  "5",
-   			 	"DrbdOptions/Net/ping-timeout":              "300",
-    			"DrbdOptions/Resource/resync-rate":          "100M",
-    			"DrbdOptions/Disk/al-extents":               "257",
-    			"DrbdOptions/Disk/max-buffers":              "4096",
-    			"DrbdOptions/Net/max-epoch-size":            "4096",
-    			"DrbdOptions/Resource/auto-promote":         "yes",
-    			"DrbdOptions/Resource/auto-promote-timeout": "20",
-    			"DrbdOptions/Handlers/split-brain":          "exit 1",
-    			"DrbdOptions/Handlers/pri-on-incon-degr":    "drbdadm secondary ${RESOURCE_NAME}",
-
-    			"DrbdPrimarySetOn":                          "MACMINI1",
 			},
+			DRBDOptions: drbdOpts,
 		},
 	})
 	if err != nil {
 		return err
 	}
+
 	err = l.resourcesCreate(ctx, c, req, params)
 	if err != nil {
-		resources, err := c.Resources.GetAll(ctx, req.Name)
-		if err == nil && len(resources) == 0 {
+		resources, ierr := c.Resources.GetAll(ctx, req.Name)
+		if ierr == nil && len(resources) == 0 {
 			c.ResourceDefinitions.Delete(ctx, req.Name)
 		}
 	}
