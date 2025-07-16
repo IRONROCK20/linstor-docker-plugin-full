@@ -207,7 +207,7 @@ func (l *LinstorDriver) newParams(name string, options map[string]string) (*Lins
 }
 
 func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
-    // 1) parse params & get client
+    // 1) Parse params & get client
     params, err := l.newParams(req.Name, req.Options)
     if err != nil {
         return err
@@ -218,58 +218,61 @@ func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
     }
     ctx := context.Background()
 
-    // 2) build DRBD options slice
-    drbdOpts := []client.DRBDOption{}
-    addOpt := func(name, val string) {
-        if val != "" {
-            drbdOpts = append(drbdOpts, client.DRBDOption{Name: name, Value: val})
-        }
-    }
-    addOpt("protocol", params.Protocol)
-    addOpt("connect-int", params.ConnectInterval)
-    addOpt("ping-int", params.PingInterval)
-    addOpt("ping-timeout", params.PingTimeout)
-    addOpt("resync-rate", params.ResyncRate)
-    addOpt("al-extents", params.ALExtents)
-    addOpt("max-buffers", params.MaxBuffers)
-    addOpt("max-epoch-size", params.MaxEpochSize)
-    addOpt("handler-split-brain", params.HandlerSplitBrain)
-    addOpt("handler-pri-on-incon-degr", params.HandlerPriOnInconDegr)
-    addOpt("primary-set-on", params.PrimarySetOn)
-
-    // 3) create the *volume* definition (size + DRBDOptions)
+    // 2) Create the volume definition (size only)
     if err := c.ResourceDefinitions.CreateVolumeDefinition(ctx, req.Name, client.VolumeDefinitionCreate{
         VolumeDefinition: client.VolumeDefinition{
             SizeKib: params.SizeKiB,
         },
-        DRBDOptions: drbdOpts,
     }); err != nil {
         return err
     }
 
-    // 4) now set the plugin‐specific props on the *resource definition*
+    // 3) Build a unified Props map
+    props := map[string]string{
+        pluginFlagKey:           pluginFlagValue,
+        pluginFSTypeKey:         params.FS,
+        "FileSystem/MkfsParams": params.FSOpts,
+    }
+    // Helper to inject DRBD options
+    addProp := func(key, val string) {
+        if val != "" {
+            // Prefix 'drbdOptions/' is what Linstor's REST API wants:
+            props["drbdOptions/"+key] = val
+        }
+    }
+    addProp("protocol", params.Protocol)
+    addProp("connect-int", params.ConnectInterval)
+    addProp("ping-int", params.PingInterval)
+    addProp("ping-timeout", params.PingTimeout)
+    addProp("resync-rate", params.ResyncRate)
+    addProp("al-extents", params.ALExtents)
+    addProp("max-buffers", params.MaxBuffers)
+    addProp("max-epoch-size", params.MaxEpochSize)
+    addProp("handler-split-brain", params.HandlerSplitBrain)
+    addProp("handler-pri-on-incon-degr", params.HandlerPriOnInconDegr)
+    addProp("primary-set-on", params.PrimarySetOn)
+
+    // 4) Register the resource‑definition with all props
     if err := c.ResourceDefinitions.Create(ctx, client.ResourceDefinitionCreate{
         ResourceDefinition: client.ResourceDefinition{
-            Name: req.Name,
-            Props: map[string]string{
-                pluginFlagKey:           pluginFlagValue,
-                pluginFSTypeKey:         params.FS,
-                "FileSystem/MkfsParams": params.FSOpts,
-            },
+            Name:  req.Name,
+            Props: props,
         },
     }); err != nil {
-        // if this fails, clean up the volume definition
-        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name)
+        // Clean up the volume definition on failure
+        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name, 0)
         return err
     }
 
-    // 5) finally, place your replicas/disks
+    // 5) Finally place your DRBD resources (diskless or full)
     if err := l.resourcesCreate(ctx, c, req, params); err != nil {
-        // on failure, remove both definitions
+        // Undo both definitions on error
         c.ResourceDefinitions.Delete(ctx, req.Name)
-        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name)
+        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name, 0)
+        return err
     }
-    return err
+
+    return nil
 }
 
 func (l *LinstorDriver) Get(req *volume.GetRequest) (*volume.GetResponse, error) {
