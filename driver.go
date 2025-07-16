@@ -207,59 +207,71 @@ func (l *LinstorDriver) newParams(name string, options map[string]string) (*Lins
 }
 
 func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
-	params, err := l.newParams(req.Name, req.Options)
-	if err != nil {
-		return err
-	}
-	c, err := l.newClient()
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
+    // 1) parse params & get client
+    params, err := l.newParams(req.Name, req.Options)
+    if err != nil {
+        return err
+    }
+    c, err := l.newClient()
+    if err != nil {
+        return err
+    }
+    ctx := context.Background()
 
-	// build DRBD options
-	drbdOpts := []client.DRBDOption{}
-	addOpt := func(name, val string) {
-		if val != "" {
-			drbdOpts = append(drbdOpts, client.DRBDOption{Name: name, Value: val})
-		}
-	}
-	addOpt("protocol", params.Protocol)
-	addOpt("connect-int", params.ConnectInterval)
-	addOpt("ping-int", params.PingInterval)
-	addOpt("ping-timeout", params.PingTimeout)
-	addOpt("resync-rate", params.ResyncRate)
-	addOpt("al-extents", params.ALExtents)
-	addOpt("max-buffers", params.MaxBuffers)
-	addOpt("max-epoch-size", params.MaxEpochSize)
-	addOpt("handler-split-brain", params.HandlerSplitBrain)
-	addOpt("handler-pri-on-incon-degr", params.HandlerPriOnInconDegr)
-	addOpt("primary-set-on", params.PrimarySetOn)
+    // 2) build DRBD options slice
+    drbdOpts := []client.DRBDOption{}
+    addOpt := func(name, val string) {
+        if val != "" {
+            drbdOpts = append(drbdOpts, client.DRBDOption{Name: name, Value: val})
+        }
+    }
+    addOpt("protocol", params.Protocol)
+    addOpt("connect-int", params.ConnectInterval)
+    addOpt("ping-int", params.PingInterval)
+    addOpt("ping-timeout", params.PingTimeout)
+    addOpt("resync-rate", params.ResyncRate)
+    addOpt("al-extents", params.ALExtents)
+    addOpt("max-buffers", params.MaxBuffers)
+    addOpt("max-epoch-size", params.MaxEpochSize)
+    addOpt("handler-split-brain", params.HandlerSplitBrain)
+    addOpt("handler-pri-on-incon-degr", params.HandlerPriOnInconDegr)
+    addOpt("primary-set-on", params.PrimarySetOn)
 
-	err = c.ResourceDefinitions.Create(ctx, client.ResourceDefinitionCreate{
-		ResourceDefinition: client.ResourceDefinition{
-			Name: req.Name,
-			Props: map[string]string{
-				pluginFlagKey:           pluginFlagValue,
-				pluginFSTypeKey:         params.FS,
-				"FileSystem/MkfsParams": params.FSOpts,
-			},
-			DRBDOptions: drbdOpts,
-		},
-	})
-	if err != nil {
-		return err
-	}
+    // 3) create the *volume* definition (size + DRBDOptions)
+    if err := c.ResourceDefinitions.CreateVolumeDefinition(ctx, req.Name, client.VolumeDefinitionCreate{
+        VolumeDefinition: client.VolumeDefinition{
+            SizeKib: params.SizeKiB,
+        },
+        DRBDOptions: drbdOpts,
+    }); err != nil {
+        return err
+    }
 
-	err = l.resourcesCreate(ctx, c, req, params)
-	if err != nil {
-		resources, ierr := c.Resources.GetAll(ctx, req.Name)
-		if ierr == nil && len(resources) == 0 {
-			c.ResourceDefinitions.Delete(ctx, req.Name)
-		}
-	}
-	return err
+    // 4) now set the plugin‐specific props on the *resource definition*
+    if err := c.ResourceDefinitions.Create(ctx, client.ResourceDefinitionCreate{
+        ResourceDefinition: client.ResourceDefinition{
+            Name: req.Name,
+            Props: map[string]string{
+                pluginFlagKey:           pluginFlagValue,
+                pluginFSTypeKey:         params.FS,
+                "FileSystem/MkfsParams": params.FSOpts,
+            },
+        },
+    }); err != nil {
+        // if this fails, clean up the volume definition
+        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name)
+        return err
+    }
+
+    // 5) finally, place your replicas/disks
+    if err := l.resourcesCreate(ctx, c, req, params); err != nil {
+        // on failure, remove both definitions
+        c.ResourceDefinitions.Delete(ctx, req.Name)
+        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name)
+    }
+    return err
 }
+
 
 func (l *LinstorDriver) Get(req *volume.GetRequest) (*volume.GetResponse, error) {
 	c, err := l.newClient()
