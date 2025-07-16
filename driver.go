@@ -106,10 +106,8 @@ func (l *LinstorDriver) newBaseURL(hosts string) (*url.URL, error) {
 
 	if !strings.Contains(host, ":") {
 		switch scheme {
-		case "http":
-			host += ":3370"
-		case "https":
-			host += ":3371"
+		case "http": host += ":3370"
+		case "https": host += ":3371"
 		}
 	}
 	return url.Parse(scheme + "://" + host)
@@ -121,10 +119,7 @@ func (l *LinstorDriver) newClient() (*client.Client, error) {
 		return nil, err
 	}
 
-	err := envconfig.InitWithOptions(config, envconfig.Options{
-		Prefix:      "LS",
-		AllOptional: true,
-	})
+	err := envconfig.InitWithOptions(config, envconfig.Options{Prefix: "LS", AllOptional: true})
 	if err != nil {
 		return nil, err
 	}
@@ -147,15 +142,8 @@ func (l *LinstorDriver) newClient() (*client.Client, error) {
 
 	return client.NewClient(
 		client.BaseURL(baseURL),
-		client.BasicAuth(&client.BasicAuthCfg{
-			Username: config.Username,
-			Password: config.Password,
-		}),
-		client.HTTPClient(&http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: tlsConfig,
-			},
-		}),
+		client.BasicAuth(&client.BasicAuthCfg{Username: config.Username, Password: config.Password}),
+		client.HTTPClient(&http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}),
 	)
 }
 
@@ -164,13 +152,8 @@ func (l *LinstorDriver) newParams(name string, options map[string]string) (*Lins
 	if err := l.loadConfig(params); err != nil {
 		return nil, err
 	}
-
 	if options != nil {
-		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-			Result:           params,
-			WeaklyTypedInput: true,
-			DecodeHook:       mapstructure.StringToSliceHookFunc(" "),
-		})
+		decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{Result: params, WeaklyTypedInput: true, DecodeHook: mapstructure.StringToSliceHookFunc(" ")})
 		if err != nil {
 			return nil, err
 		}
@@ -178,101 +161,77 @@ func (l *LinstorDriver) newParams(name string, options map[string]string) (*Lins
 			return nil, err
 		}
 	}
-
-	// convert string Size to SizeKiB
-	if params.Size == "" {
-		params.Size = "100MB"
-	}
+	// size conversion
+	if params.Size == "" { params.Size = "100MB" }
 	u := unit.MustNewUnit(unit.DefaultUnits)
 	v, err := u.ValueFromString(params.Size)
-	if err != nil {
-		return nil, fmt.Errorf("Could not convert '%s' to bytes: %v", params.Size, err)
-	}
-	bytes := v.Value
-	lower := 4 * unit.M
-	if bytes < lower {
-		bytes = lower
-	}
+	if err != nil { return nil, fmt.Errorf("Could not convert '%s': %v", params.Size, err) }
+	bytes := v.Value; lower := 4 * unit.M
+	if bytes < lower { bytes = lower }
 	params.SizeKiB = uint64(bytes / unit.K)
-
-	if params.FS == "" {
-		params.FS = "ext4"
-	}
-
-	if params.Replicas == 0 {
-		params.Replicas = 2
-	}
-
+	if params.FS == "" { params.FS = "ext4" }
+	if params.Replicas == 0 { params.Replicas = 2 }
 	return params, nil
 }
 
 func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
-    // 1) Parse params & get client
-    params, err := l.newParams(req.Name, req.Options)
-    if err != nil {
-        return err
-    }
-    c, err := l.newClient()
-    if err != nil {
-        return err
-    }
-    ctx := context.Background()
+	params, err := l.newParams(req.Name, req.Options)
+	if err != nil { return err }
+	c, err := l.newClient()
+	if err != nil { return err }
+	ctx := context.Background()
 
-    // 2) Create the volume definition (size only)
-    if err := c.ResourceDefinitions.CreateVolumeDefinition(ctx, req.Name, client.VolumeDefinitionCreate{
-        VolumeDefinition: client.VolumeDefinition{
-            SizeKib: params.SizeKiB,
-        },
-    }); err != nil {
-        return err
-    }
+	// volume definition (size)
+	if err := c.ResourceDefinitions.CreateVolumeDefinition(ctx, req.Name, client.VolumeDefinitionCreate{VolumeDefinition: client.VolumeDefinition{SizeKib: params.SizeKiB}}); err != nil {
+		return err
+	}
 
-    // 3) Build a unified Props map
-    props := map[string]string{
-        pluginFlagKey:           pluginFlagValue,
-        pluginFSTypeKey:         params.FS,
-        "FileSystem/MkfsParams": params.FSOpts,
-    }
-    // Helper to inject DRBD options
-    addProp := func(key, val string) {
-        if val != "" {
-            // Prefix 'drbdOptions/' is what Linstor's REST API wants:
-            props["drbdOptions/"+key] = val
-        }
-    }
-    addProp("protocol", params.Protocol)
-    addProp("connect-int", params.ConnectInterval)
-    addProp("ping-int", params.PingInterval)
-    addProp("ping-timeout", params.PingTimeout)
-    addProp("resync-rate", params.ResyncRate)
-    addProp("al-extents", params.ALExtents)
-    addProp("max-buffers", params.MaxBuffers)
-    addProp("max-epoch-size", params.MaxEpochSize)
-    addProp("handler-split-brain", params.HandlerSplitBrain)
-    addProp("handler-pri-on-incon-degr", params.HandlerPriOnInconDegr)
-    addProp("primary-set-on", params.PrimarySetOn)
+	// build props
+	props := map[string]string{pluginFlagKey: pluginFlagValue, pluginFSTypeKey: params.FS, "FileSystem/MkfsParams": params.FSOpts}
+	addProp := func(key, val string) { if val != "" { props["drbdOptions/"+key] = val } }
+	addProp("protocol", params.Protocol)
+	addProp("connect-int", params.ConnectInterval)
+	addProp("ping-int", params.PingInterval)
+	addProp("ping-timeout", params.PingTimeout)
+	addProp("resync-rate", params.ResyncRate)
+	addProp("al-extents", params.ALExtents)
+	addProp("max-buffers", params.MaxBuffers)
+	addProp("max-epoch-size", params.MaxEpochSize)
+	addProp("handler-split-brain", params.HandlerSplitBrain)
+	addProp("handler-pri-on-incon-degr", params.HandlerPriOnInconDegr)
+	addProp("primary-set-on", params.PrimarySetOn)
 
-    // 4) Register the resource‑definition with all props
-    if err := c.ResourceDefinitions.Create(ctx, client.ResourceDefinitionCreate{
-        ResourceDefinition: client.ResourceDefinition{
-            Name:  req.Name,
-            Props: props,
-        },
-    }); err != nil {
-        // Clean up the volume definition on failure
-        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name, 0)
-        return err
-    }
+	// resource definition
+	if err := c.ResourceDefinitions.Create(ctx, client.ResourceDefinitionCreate{ResourceDefinition: client.ResourceDefinition{Name: req.Name, Props: props}}); err != nil {
+		c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name, 0)
+		return err
+	}
 
-    // 5) Finally place your DRBD resources (diskless or full)
-    if err := l.resourcesCreate(ctx, c, req, params); err != nil {
-        // Undo both definitions on error
-        c.ResourceDefinitions.Delete(ctx, req.Name)
-        c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name, 0)
-        return err
-    }
+	// place resources
+	if err := l.resourcesCreate(ctx, c, req, params); err != nil {
+		c.ResourceDefinitions.Delete(ctx, req.Name)
+		c.ResourceDefinitions.DeleteVolumeDefinition(ctx, req.Name, 0)
+		return err
+	}
+	return nil
+}
 
-    return nil
+// resourcesCreate places diskfull or diskless based on params
+func (l *LinstorDriver) resourcesCreate(ctx context.Context, c *client.Client, req *volume.CreateRequest, params *LinstorParams) error {
+	err := c.ResourceDefinitions.Create(ctx, client.ResourceDefinitionCreate{ /* noop: skip */ }) // placeholder
+	// original logic here
+	if len(params.Nodes) == 0 {
+		return c.Resources.Autoplace(ctx, req.Name, client.AutoPlaceRequest{
+			DisklessOnRemaining: params.DisklessOnRemaining,
+			SelectFilter: client.AutoSelectFilter{PlaceCount: params.Replicas, StoragePool: params.StoragePool, NotPlaceWithRscRegex: params.DoNotPlaceWithRegex, ReplicasOnSame: params.ReplicasOnSame, ReplicasOnDifferent: params.ReplicasOnDifferent},
+		})
+	}
+	for _, node := range params.Nodes {
+		if err := c.Resources.Create(ctx, l.toDiskfullCreate(req.Name, node, params)); err != nil {
+			return err
+		}
+	}
+	return err
 }
 
 func (l *LinstorDriver) Get(req *volume.GetRequest) (*volume.GetResponse, error) {
