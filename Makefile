@@ -38,6 +38,12 @@ create:
 enable:
 	@echo "### enable plugin ${PLUGIN_NAME}:${PLUGIN_TAG}"
 	@docker plugin enable ${PLUGIN_NAME}:${PLUGIN_TAG}
+	####NEW LINES ABOVE ADDED.
+	@echo "### grant all permissions to plugin ${PLUGIN_NAME}:${PLUGIN_TAG}"
+	@docker plugin disable ${PLUGIN_NAME}:${PLUGIN_TAG}  >/dev/null 2>&1 || true
+	@docker plugin upgrade  ${PLUGIN_NAME}:${PLUGIN_TAG} \
+	    --grant-all-permissions
+	@docker plugin enable   ${PLUGIN_NAME}:${PLUGIN_TAG}
 
 push: clean docker rootfs create enable
 	@echo "### push plugin ${PLUGIN_NAME}:${PLUGIN_TAG}"
