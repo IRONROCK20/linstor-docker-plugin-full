@@ -272,7 +272,6 @@ func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
     return err
 }
 
-
 func (l *LinstorDriver) Get(req *volume.GetRequest) (*volume.GetResponse, error) {
 	c, err := l.newClient()
 	if err != nil {
