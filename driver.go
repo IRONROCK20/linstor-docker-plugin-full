@@ -243,6 +243,21 @@ func (l *LinstorDriver) Create(req *volume.CreateRequest) error {
 				pluginFlagKey:           pluginFlagValue,
 				pluginFSTypeKey:         params.FS,
 				"FileSystem/MkfsParams": params.FSOpts,
+
+			    "DrbdOptions/Resource/protocol":             "C",
+   			 	"DrbdOptions/Net/connect-int":               "60",
+   			 	"DrbdOptions/Net/ping-int":                  "5",
+   			 	"DrbdOptions/Net/ping-timeout":              "300",
+    			"DrbdOptions/Resource/resync-rate":          "100M",
+    			"DrbdOptions/Disk/al-extents":               "257",
+    			"DrbdOptions/Disk/max-buffers":              "4096",
+    			"DrbdOptions/Net/max-epoch-size":            "4096",
+    			"DrbdOptions/Resource/auto-promote":         "yes",
+    			"DrbdOptions/Resource/auto-promote-timeout": "20",
+    			"DrbdOptions/Handlers/split-brain":          "exit 1",
+    			"DrbdOptions/Handlers/pri-on-incon-degr":    "drbdadm secondary ${RESOURCE_NAME}",
+
+    			"DrbdPrimarySetOn":                          "MACMINI1",
 			},
 		},
 	})
