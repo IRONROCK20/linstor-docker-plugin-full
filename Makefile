@@ -1,12 +1,12 @@
-PLUGIN_NAME=lade/linstor
-PLUGIN_TAG=latest
-PLUGIN_ARCH=arm64
+PLUGIN_NAME = lade/linstor
+PLUGIN_TAG  = latest
+PLUGIN_ARCH = arm64
 
-all: clean docker rootfs create
+all: clean docker rootfs create enable
 
 clean:
 	@echo "### rm ./plugin"
-	@rm -rf ./plugin
+	@rm -rf ./plugin plugin.tar
 
 docker:
 	@echo "### docker build: builder image"
@@ -39,15 +39,22 @@ enable:
 	@echo "### enable plugin ${PLUGIN_NAME}:${PLUGIN_TAG}"
 	@docker plugin enable ${PLUGIN_NAME}:${PLUGIN_TAG}
 
-push: clean docker rootfs create enable
-	@echo "### push plugin ${PLUGIN_NAME}:${PLUGIN_TAG}"
-	@docker plugin push ${PLUGIN_NAME}:${PLUGIN_TAG}
+# -------------------------------------------------------------------
+# bundle the locally-created plugin into a tarball
+bundle: create
+	@echo "### bundle plugin ${PLUGIN_NAME}:${PLUGIN_TAG} → plugin.tar"
+	@docker plugin bundle ${PLUGIN_NAME}:${PLUGIN_TAG} plugin.tar
 
 # -------------------------------------------------------------------
-# Build, push to your registry, then install & grant all permissions
-install: push
-	@echo "==> installing plugin $(PLUGIN_NAME):$(PLUGIN_TAG) with ALL permissions"
-	docker plugin install \
+# install straight from the tarball with ALL permissions (no registry push)
+local-install: bundle
+	@echo "### remove any already-installed plugin"
+	@docker plugin disable linstor               >/dev/null 2>&1 || true
+	@docker plugin rm      lade/linstor:${PLUGIN_TAG} >/dev/null 2>&1 || true
+	@echo "### install from plugin.tar with ALL permissions"
+	@docker plugin install \
 	  --alias linstor \
 	  --grant-all-permissions \
-	  $(PLUGIN_NAME):$(PLUGIN_TAG)
+	  ./plugin.tar
+
+.PHONY: all clean docker rootfs create enable bundle local-install
