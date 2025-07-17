@@ -1,4 +1,4 @@
-module github.com/IRONROCK20/linstor-docker-plugin-full
+module github.com/IRONROCK20/linstor-docker-volume
 
 go 1.16
 
