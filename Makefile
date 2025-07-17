@@ -1,6 +1,6 @@
 PLUGIN_NAME=lade/linstor
 PLUGIN_TAG=latest
-PLUGIN_ARCH=amd64
+PLUGIN_ARCH=arm64
 
 all: clean docker rootfs create
 
